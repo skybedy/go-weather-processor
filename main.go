@@ -50,7 +50,7 @@ func loadConfig() Config {
 		DBHost:       getEnv("DB_HOST", "localhost"),
 		DBPort:       getEnv("DB_PORT", "3306"),
 		DBName:       getEnv("DB_NAME", "tene_life"),
-		CronSchedule: getEnv("CRON_SCHEDULE", "0 * * * *"), // Default: every hour
+		CronSchedule: getEnv("CRON_SCHEDULE", "1-56/5 * * * *"), // Default: every 5 minutes at 1, 6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56
 	}
 }
 

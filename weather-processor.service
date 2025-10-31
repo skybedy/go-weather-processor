@@ -17,7 +17,7 @@ Environment="DB_PASSWORD=yCTdC6Zzg6zNYi"
 Environment="DB_HOST=localhost"
 Environment="DB_PORT=3306"
 Environment="DB_NAME=tene_life"
-Environment="CRON_SCHEDULE=0 * * * *"
+Environment="CRON_SCHEDULE=1-56/5 * * * *"
 
 Restart=always
 RestartSec=10
