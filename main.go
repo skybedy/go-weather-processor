@@ -168,5 +168,76 @@ func processWeatherData() error {
 	lastID, _ := result.LastInsertId()
 	log.Printf("Data inserted successfully with ID: %d", lastID)
 
+	// Calculate hourly averages only at the top of the hour (minute 0)
+	if time.Now().Minute() == 0 {
+		log.Println("Top of the hour - calculating hourly averages...")
+		if err := updateHourlyAverages(db, measuredAt); err != nil {
+			log.Printf("Warning: Failed to update hourly averages: %v", err)
+			// Don't return error - raw data is already saved
+		}
+	}
+
+	return nil
+}
+
+// updateHourlyAverages calculates hourly averages for the previous complete hour
+func updateHourlyAverages(db *sql.DB, currentTime time.Time) error {
+	// Calculate for the previous hour (the one that just completed)
+	previousHour := currentTime.Add(-1 * time.Hour)
+	date := previousHour.Format("2006-01-02")
+	hour := previousHour.Hour()
+
+	log.Printf("Calculating hourly averages for %s hour %d", date, hour)
+
+	// Calculate averages for this hour
+	var avgTemp, avgPressure, avgHumidity float64
+	var samplesCount int
+
+	query := `
+		SELECT
+			AVG(temperature) as avg_temp,
+			AVG(pressure) as avg_pressure,
+			AVG(humidity) as avg_humidity,
+			COUNT(*) as samples
+		FROM weather
+		WHERE DATE(measured_at) = ? AND HOUR(measured_at) = ?
+	`
+
+	err := db.QueryRow(query, date, hour).Scan(&avgTemp, &avgPressure, &avgHumidity, &samplesCount)
+	if err != nil {
+		return fmt.Errorf("failed to calculate averages: %w", err)
+	}
+
+	if samplesCount == 0 {
+		log.Printf("No samples found for %s hour %d, skipping", date, hour)
+		return nil
+	}
+
+	// Round averages to 1 decimal place
+	avgTemp = math.Round(avgTemp*10) / 10
+	avgPressure = math.Round(avgPressure*10) / 10
+	avgHumidity = math.Round(avgHumidity*10) / 10
+
+	log.Printf("Hourly averages: Temp=%.1f°C, Pressure=%.1fhPa, Humidity=%.1f%% (samples: %d)",
+		avgTemp, avgPressure, avgHumidity, samplesCount)
+
+	// UPSERT into weather_hourly
+	upsertQuery := `
+		INSERT INTO weather_hourly (date, hour, avg_temperature, avg_pressure, avg_humidity, samples_count)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			avg_temperature = VALUES(avg_temperature),
+			avg_pressure = VALUES(avg_pressure),
+			avg_humidity = VALUES(avg_humidity),
+			samples_count = VALUES(samples_count),
+			updated_at = CURRENT_TIMESTAMP
+	`
+
+	_, err = db.Exec(upsertQuery, date, hour, avgTemp, avgPressure, avgHumidity, samplesCount)
+	if err != nil {
+		return fmt.Errorf("failed to upsert hourly averages: %w", err)
+	}
+
+	log.Printf("Hourly averages updated successfully for %s hour %d", date, hour)
 	return nil
 }
