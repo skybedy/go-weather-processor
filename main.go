@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"time"
 
@@ -129,6 +130,14 @@ func processWeatherData() error {
 	log.Printf("Parsed weather data: Temp=%.2f°C, Pressure=%.2fhPa, Humidity=%.2f%%",
 		weatherData.Temperature, weatherData.Pressure, weatherData.Humidity)
 
+	// Round values to 1 decimal place
+	temperature := math.Round(weatherData.Temperature*10) / 10
+	pressure := math.Round(weatherData.Pressure*10) / 10
+	humidity := math.Round(weatherData.Humidity*10) / 10
+
+	log.Printf("Rounded values: Temp=%.1f°C, Pressure=%.1fhPa, Humidity=%.1f%%",
+		temperature, pressure, humidity)
+
 	// Convert Unix timestamp to datetime
 	measuredAt := time.Unix(weatherData.Timestamp, 0)
 
@@ -151,7 +160,7 @@ func processWeatherData() error {
 	query := `INSERT INTO weather (measured_at, temperature, pressure, humidity)
               VALUES (?, ?, ?, ?)`
 
-	result, err := db.Exec(query, measuredAt, weatherData.Temperature, weatherData.Pressure, weatherData.Humidity)
+	result, err := db.Exec(query, measuredAt, temperature, pressure, humidity)
 	if err != nil {
 		return fmt.Errorf("failed to insert data: %w", err)
 	}
