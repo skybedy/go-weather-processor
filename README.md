@@ -109,11 +109,11 @@ V produkci se environment variables nastavují v souboru `weather-processor.serv
 | `DB_HOST` | Host databáze | Ne | `localhost` |
 | `DB_PORT` | Port databáze | Ne | `3306` |
 | `DB_NAME` | Jméno databáze | Ne | `tene_life` |
-| `CRON_SCHEDULE` | Cron výraz pro scheduling | Ne | `1-56/5 * * * *` (každých 5 minut na XX:01, XX:06, XX:11...) |
+| `CRON_SCHEDULE` | Cron výraz pro scheduling | Ne | `*/5 * * * *` (každých 5 minut) |
 
 ### Cron Schedule příklady
 
-- `1-56/5 * * * *` - Každých 5 minut na minutách 1, 6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56 (výchozí)
+- `*/5 * * * *` - Každých 5 minut (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55) (výchozí)
 - `0 * * * *` - Každou hodinu v 0 minut
 - `*/2 * * * *` - Každé 2 minuty (pro testování)
 - `0 */6 * * *` - Každých 6 hodin
