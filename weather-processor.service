@@ -1,0 +1,31 @@
+[Unit]
+Description=Weather Data Processor Service
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=skybedy
+Group=skybedy
+WorkingDirectory=/var/www/go-projects/go-weather-processor
+ExecStart=/var/www/go-projects/go-weather-processor/go-weather-processor
+
+# Environment variables - CUSTOMIZE THESE FOR PRODUCTION
+Environment="JSON_FILE_PATH=/var/www/laravel-tene.life/public/files/weather.json"
+Environment="DB_USER=skybedy"
+Environment="DB_PASSWORD=yCTdC6Zzg6zNYi"
+Environment="DB_HOST=localhost"
+Environment="DB_PORT=3306"
+Environment="DB_NAME=tene_life"
+Environment="CRON_SCHEDULE=0 * * * *"
+
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=weather-processor
+
+[Install]
+WantedBy=multi-user.target
