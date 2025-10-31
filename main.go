@@ -84,7 +84,7 @@ func main() {
 	// Create cron scheduler
 	c := cron.New()
 
-	// Schedule job with configurable schedule
+	// Schedule main data processing job (every 5 minutes)
 	_, err := c.AddFunc(config.CronSchedule, func() {
 		log.Println("Starting scheduled weather data processing...")
 		if err := processWeatherData(); err != nil {
@@ -93,16 +93,87 @@ func main() {
 			log.Println("Weather data processed successfully")
 		}
 	})
-
 	if err != nil {
-		log.Fatalf("Failed to schedule cron job: %v", err)
+		log.Fatalf("Failed to schedule main processing job: %v", err)
+	}
+
+	// Schedule daily statistics calculation (every day at 00:05)
+	_, err = c.AddFunc("5 0 * * *", func() {
+		log.Println("Starting daily statistics calculation...")
+		// Connect to database
+		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true",
+			config.DBUser, config.DBPassword, config.DBHost, config.DBPort, config.DBName)
+		db, err := sql.Open("mysql", dsn)
+		if err != nil {
+			log.Printf("Error connecting to database for daily stats: %v", err)
+			return
+		}
+		defer db.Close()
+
+		if err := updateDailyStatistics(db); err != nil {
+			log.Printf("Error calculating daily statistics: %v", err)
+		} else {
+			log.Println("Daily statistics calculated successfully")
+		}
+	})
+	if err != nil {
+		log.Fatalf("Failed to schedule daily statistics job: %v", err)
+	}
+
+	// Schedule weekly statistics calculation (every Monday at 00:10)
+	_, err = c.AddFunc("10 0 * * 1", func() {
+		log.Println("Starting weekly statistics calculation...")
+		// Connect to database
+		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true",
+			config.DBUser, config.DBPassword, config.DBHost, config.DBPort, config.DBName)
+		db, err := sql.Open("mysql", dsn)
+		if err != nil {
+			log.Printf("Error connecting to database for weekly stats: %v", err)
+			return
+		}
+		defer db.Close()
+
+		if err := updateWeeklyStatistics(db); err != nil {
+			log.Printf("Error calculating weekly statistics: %v", err)
+		} else {
+			log.Println("Weekly statistics calculated successfully")
+		}
+	})
+	if err != nil {
+		log.Fatalf("Failed to schedule weekly statistics job: %v", err)
+	}
+
+	// Schedule monthly statistics calculation (1st day of month at 00:15)
+	_, err = c.AddFunc("15 0 1 * *", func() {
+		log.Println("Starting monthly statistics calculation...")
+		// Connect to database
+		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true",
+			config.DBUser, config.DBPassword, config.DBHost, config.DBPort, config.DBName)
+		db, err := sql.Open("mysql", dsn)
+		if err != nil {
+			log.Printf("Error connecting to database for monthly stats: %v", err)
+			return
+		}
+		defer db.Close()
+
+		if err := updateMonthlyStatistics(db); err != nil {
+			log.Printf("Error calculating monthly statistics: %v", err)
+		} else {
+			log.Println("Monthly statistics calculated successfully")
+		}
+	})
+	if err != nil {
+		log.Fatalf("Failed to schedule monthly statistics job: %v", err)
 	}
 
 	// Start the cron scheduler
 	c.Start()
 
 	log.Println("Cron scheduler started. Waiting for scheduled tasks...")
-	log.Printf("Job will run with schedule: %s", config.CronSchedule)
+	log.Printf("Main processing job will run with schedule: %s", config.CronSchedule)
+	log.Println("Daily statistics: every day at 00:05")
+	log.Println("Weekly statistics: every Monday at 00:10")
+	log.Println("Monthly statistics: 1st day of month at 00:15")
 
 	// Run once immediately on startup for testing
 	log.Println("Running initial weather data processing...")
@@ -168,24 +239,21 @@ func processWeatherData() error {
 	lastID, _ := result.LastInsertId()
 	log.Printf("Data inserted successfully with ID: %d", lastID)
 
-	// Calculate hourly averages only at the top of the hour (minute 0)
-	if time.Now().Minute() == 0 {
-		log.Println("Top of the hour - calculating hourly averages...")
-		if err := updateHourlyAverages(db, measuredAt); err != nil {
-			log.Printf("Warning: Failed to update hourly averages: %v", err)
-			// Don't return error - raw data is already saved
-		}
+	// Calculate hourly averages for current hour after every insert
+	log.Println("Calculating hourly averages for current hour...")
+	if err := updateHourlyAverages(db, measuredAt); err != nil {
+		log.Printf("Warning: Failed to update hourly averages: %v", err)
+		// Don't return error - raw data is already saved
 	}
 
 	return nil
 }
 
-// updateHourlyAverages calculates hourly averages for the previous complete hour
+// updateHourlyAverages calculates hourly averages for the current hour
 func updateHourlyAverages(db *sql.DB, currentTime time.Time) error {
-	// Calculate for the previous hour (the one that just completed)
-	previousHour := currentTime.Add(-1 * time.Hour)
-	date := previousHour.Format("2006-01-02")
-	hour := previousHour.Hour()
+	// Calculate for the current hour
+	date := currentTime.Format("2006-01-02")
+	hour := currentTime.Hour()
 
 	log.Printf("Calculating hourly averages for %s hour %d", date, hour)
 
@@ -239,5 +307,320 @@ func updateHourlyAverages(db *sql.DB, currentTime time.Time) error {
 	}
 
 	log.Printf("Hourly averages updated successfully for %s hour %d", date, hour)
+	return nil
+}
+
+// updateDailyStatistics calculates daily statistics for yesterday
+func updateDailyStatistics(db *sql.DB) error {
+	// Calculate for yesterday
+	yesterday := time.Now().AddDate(0, 0, -1)
+	date := yesterday.Format("2006-01-02")
+
+	log.Printf("Calculating daily statistics for %s", date)
+
+	// Calculate statistics for the day
+	var avgTemp, minTemp, maxTemp float64
+	var avgPressure, minPressure, maxPressure float64
+	var avgHumidity, minHumidity, maxHumidity float64
+	var samplesCount int
+
+	query := `
+		SELECT
+			AVG(temperature) as avg_temp,
+			MIN(temperature) as min_temp,
+			MAX(temperature) as max_temp,
+			AVG(pressure) as avg_pressure,
+			MIN(pressure) as min_pressure,
+			MAX(pressure) as max_pressure,
+			AVG(humidity) as avg_humidity,
+			MIN(humidity) as min_humidity,
+			MAX(humidity) as max_humidity,
+			COUNT(*) as samples
+		FROM weather
+		WHERE DATE(measured_at) = ?
+	`
+
+	err := db.QueryRow(query, date).Scan(
+		&avgTemp, &minTemp, &maxTemp,
+		&avgPressure, &minPressure, &maxPressure,
+		&avgHumidity, &minHumidity, &maxHumidity,
+		&samplesCount,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to calculate daily statistics: %w", err)
+	}
+
+	if samplesCount == 0 {
+		log.Printf("No samples found for %s, skipping", date)
+		return nil
+	}
+
+	// Round values to 1 decimal place
+	avgTemp = math.Round(avgTemp*10) / 10
+	minTemp = math.Round(minTemp*10) / 10
+	maxTemp = math.Round(maxTemp*10) / 10
+	avgPressure = math.Round(avgPressure*10) / 10
+	minPressure = math.Round(minPressure*10) / 10
+	maxPressure = math.Round(maxPressure*10) / 10
+	avgHumidity = math.Round(avgHumidity*10) / 10
+	minHumidity = math.Round(minHumidity*10) / 10
+	maxHumidity = math.Round(maxHumidity*10) / 10
+
+	log.Printf("Daily statistics for %s: Temp avg=%.1f min=%.1f max=%.1f, "+
+		"Pressure avg=%.1f min=%.1f max=%.1f, Humidity avg=%.1f min=%.1f max=%.1f (samples: %d)",
+		date, avgTemp, minTemp, maxTemp, avgPressure, minPressure, maxPressure,
+		avgHumidity, minHumidity, maxHumidity, samplesCount)
+
+	// UPSERT into weather_daily
+	upsertQuery := `
+		INSERT INTO weather_daily (
+			date,
+			avg_temperature, min_temperature, max_temperature,
+			avg_pressure, min_pressure, max_pressure,
+			avg_humidity, min_humidity, max_humidity,
+			samples_count
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			avg_temperature = VALUES(avg_temperature),
+			min_temperature = VALUES(min_temperature),
+			max_temperature = VALUES(max_temperature),
+			avg_pressure = VALUES(avg_pressure),
+			min_pressure = VALUES(min_pressure),
+			max_pressure = VALUES(max_pressure),
+			avg_humidity = VALUES(avg_humidity),
+			min_humidity = VALUES(min_humidity),
+			max_humidity = VALUES(max_humidity),
+			samples_count = VALUES(samples_count),
+			updated_at = CURRENT_TIMESTAMP
+	`
+
+	_, err = db.Exec(upsertQuery, date,
+		avgTemp, minTemp, maxTemp,
+		avgPressure, minPressure, maxPressure,
+		avgHumidity, minHumidity, maxHumidity,
+		samplesCount)
+	if err != nil {
+		return fmt.Errorf("failed to upsert daily statistics: %w", err)
+	}
+
+	log.Printf("Daily statistics updated successfully for %s", date)
+	return nil
+}
+
+// updateWeeklyStatistics calculates weekly statistics for last week (Monday-Sunday)
+func updateWeeklyStatistics(db *sql.DB) error {
+	// Calculate for last week
+	now := time.Now()
+	// Get last Monday (start of last week)
+	lastMonday := now.AddDate(0, 0, -int(now.Weekday())-6)
+	if now.Weekday() == time.Sunday {
+		lastMonday = now.AddDate(0, 0, -13)
+	}
+	// Normalize to start of day
+	lastMonday = time.Date(lastMonday.Year(), lastMonday.Month(), lastMonday.Day(), 0, 0, 0, 0, lastMonday.Location())
+
+	// Last Sunday (end of last week)
+	lastSunday := lastMonday.AddDate(0, 0, 6)
+
+	year, week := lastMonday.ISOWeek()
+	weekStart := lastMonday.Format("2006-01-02")
+	weekEnd := lastSunday.Format("2006-01-02")
+
+	log.Printf("Calculating weekly statistics for year %d week %d (%s to %s)", year, week, weekStart, weekEnd)
+
+	// Calculate statistics for the week
+	var avgTemp, minTemp, maxTemp float64
+	var avgPressure, minPressure, maxPressure float64
+	var avgHumidity, minHumidity, maxHumidity float64
+	var samplesCount int
+
+	query := `
+		SELECT
+			AVG(temperature) as avg_temp,
+			MIN(temperature) as min_temp,
+			MAX(temperature) as max_temp,
+			AVG(pressure) as avg_pressure,
+			MIN(pressure) as min_pressure,
+			MAX(pressure) as max_pressure,
+			AVG(humidity) as avg_humidity,
+			MIN(humidity) as min_humidity,
+			MAX(humidity) as max_humidity,
+			COUNT(*) as samples
+		FROM weather
+		WHERE DATE(measured_at) >= ? AND DATE(measured_at) <= ?
+	`
+
+	err := db.QueryRow(query, weekStart, weekEnd).Scan(
+		&avgTemp, &minTemp, &maxTemp,
+		&avgPressure, &minPressure, &maxPressure,
+		&avgHumidity, &minHumidity, &maxHumidity,
+		&samplesCount,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to calculate weekly statistics: %w", err)
+	}
+
+	if samplesCount == 0 {
+		log.Printf("No samples found for year %d week %d, skipping", year, week)
+		return nil
+	}
+
+	// Round values to 1 decimal place
+	avgTemp = math.Round(avgTemp*10) / 10
+	minTemp = math.Round(minTemp*10) / 10
+	maxTemp = math.Round(maxTemp*10) / 10
+	avgPressure = math.Round(avgPressure*10) / 10
+	minPressure = math.Round(minPressure*10) / 10
+	maxPressure = math.Round(maxPressure*10) / 10
+	avgHumidity = math.Round(avgHumidity*10) / 10
+	minHumidity = math.Round(minHumidity*10) / 10
+	maxHumidity = math.Round(maxHumidity*10) / 10
+
+	log.Printf("Weekly statistics for year %d week %d: Temp avg=%.1f min=%.1f max=%.1f, "+
+		"Pressure avg=%.1f min=%.1f max=%.1f, Humidity avg=%.1f min=%.1f max=%.1f (samples: %d)",
+		year, week, avgTemp, minTemp, maxTemp, avgPressure, minPressure, maxPressure,
+		avgHumidity, minHumidity, maxHumidity, samplesCount)
+
+	// UPSERT into weather_weekly
+	upsertQuery := `
+		INSERT INTO weather_weekly (
+			year, week, week_start, week_end,
+			avg_temperature, min_temperature, max_temperature,
+			avg_pressure, min_pressure, max_pressure,
+			avg_humidity, min_humidity, max_humidity,
+			samples_count
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			week_start = VALUES(week_start),
+			week_end = VALUES(week_end),
+			avg_temperature = VALUES(avg_temperature),
+			min_temperature = VALUES(min_temperature),
+			max_temperature = VALUES(max_temperature),
+			avg_pressure = VALUES(avg_pressure),
+			min_pressure = VALUES(min_pressure),
+			max_pressure = VALUES(max_pressure),
+			avg_humidity = VALUES(avg_humidity),
+			min_humidity = VALUES(min_humidity),
+			max_humidity = VALUES(max_humidity),
+			samples_count = VALUES(samples_count),
+			updated_at = CURRENT_TIMESTAMP
+	`
+
+	_, err = db.Exec(upsertQuery, year, week, weekStart, weekEnd,
+		avgTemp, minTemp, maxTemp,
+		avgPressure, minPressure, maxPressure,
+		avgHumidity, minHumidity, maxHumidity,
+		samplesCount)
+	if err != nil {
+		return fmt.Errorf("failed to upsert weekly statistics: %w", err)
+	}
+
+	log.Printf("Weekly statistics updated successfully for year %d week %d", year, week)
+	return nil
+}
+
+// updateMonthlyStatistics calculates monthly statistics for last month
+func updateMonthlyStatistics(db *sql.DB) error {
+	// Calculate for last month
+	now := time.Now()
+	lastMonth := now.AddDate(0, -1, 0)
+	year := lastMonth.Year()
+	month := int(lastMonth.Month())
+
+	log.Printf("Calculating monthly statistics for year %d month %d", year, month)
+
+	// First and last day of last month
+	firstDay := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, now.Location())
+	lastDay := firstDay.AddDate(0, 1, -1)
+
+	// Calculate statistics for the month
+	var avgTemp, minTemp, maxTemp float64
+	var avgPressure, minPressure, maxPressure float64
+	var avgHumidity, minHumidity, maxHumidity float64
+	var samplesCount int
+
+	query := `
+		SELECT
+			AVG(temperature) as avg_temp,
+			MIN(temperature) as min_temp,
+			MAX(temperature) as max_temp,
+			AVG(pressure) as avg_pressure,
+			MIN(pressure) as min_pressure,
+			MAX(pressure) as max_pressure,
+			AVG(humidity) as avg_humidity,
+			MIN(humidity) as min_humidity,
+			MAX(humidity) as max_humidity,
+			COUNT(*) as samples
+		FROM weather
+		WHERE DATE(measured_at) >= ? AND DATE(measured_at) <= ?
+	`
+
+	err := db.QueryRow(query, firstDay.Format("2006-01-02"), lastDay.Format("2006-01-02")).Scan(
+		&avgTemp, &minTemp, &maxTemp,
+		&avgPressure, &minPressure, &maxPressure,
+		&avgHumidity, &minHumidity, &maxHumidity,
+		&samplesCount,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to calculate monthly statistics: %w", err)
+	}
+
+	if samplesCount == 0 {
+		log.Printf("No samples found for year %d month %d, skipping", year, month)
+		return nil
+	}
+
+	// Round values to 1 decimal place
+	avgTemp = math.Round(avgTemp*10) / 10
+	minTemp = math.Round(minTemp*10) / 10
+	maxTemp = math.Round(maxTemp*10) / 10
+	avgPressure = math.Round(avgPressure*10) / 10
+	minPressure = math.Round(minPressure*10) / 10
+	maxPressure = math.Round(maxPressure*10) / 10
+	avgHumidity = math.Round(avgHumidity*10) / 10
+	minHumidity = math.Round(minHumidity*10) / 10
+	maxHumidity = math.Round(maxHumidity*10) / 10
+
+	log.Printf("Monthly statistics for year %d month %d: Temp avg=%.1f min=%.1f max=%.1f, "+
+		"Pressure avg=%.1f min=%.1f max=%.1f, Humidity avg=%.1f min=%.1f max=%.1f (samples: %d)",
+		year, month, avgTemp, minTemp, maxTemp, avgPressure, minPressure, maxPressure,
+		avgHumidity, minHumidity, maxHumidity, samplesCount)
+
+	// UPSERT into weather_monthly
+	upsertQuery := `
+		INSERT INTO weather_monthly (
+			year, month,
+			avg_temperature, min_temperature, max_temperature,
+			avg_pressure, min_pressure, max_pressure,
+			avg_humidity, min_humidity, max_humidity,
+			samples_count
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			avg_temperature = VALUES(avg_temperature),
+			min_temperature = VALUES(min_temperature),
+			max_temperature = VALUES(max_temperature),
+			avg_pressure = VALUES(avg_pressure),
+			min_pressure = VALUES(min_pressure),
+			max_pressure = VALUES(max_pressure),
+			avg_humidity = VALUES(avg_humidity),
+			min_humidity = VALUES(min_humidity),
+			max_humidity = VALUES(max_humidity),
+			samples_count = VALUES(samples_count),
+			updated_at = CURRENT_TIMESTAMP
+	`
+
+	_, err = db.Exec(upsertQuery, year, month,
+		avgTemp, minTemp, maxTemp,
+		avgPressure, minPressure, maxPressure,
+		avgHumidity, minHumidity, maxHumidity,
+		samplesCount)
+	if err != nil {
+		return fmt.Errorf("failed to upsert monthly statistics: %w", err)
+	}
+
+	log.Printf("Monthly statistics updated successfully for year %d month %d", year, month)
 	return nil
 }
