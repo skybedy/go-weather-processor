@@ -324,6 +324,7 @@ func updateDailyStatistics(db *sql.DB) error {
 			max_humidity = VALUES(max_humidity),
 			samples_count = VALUES(samples_count),
 			updated_at = CURRENT_TIMESTAMP
+		-- sea_temperature is NOT updated here, only manually via API
 	`
 
 	_, err = db.Exec(upsert, date,
