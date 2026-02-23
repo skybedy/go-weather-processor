@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/smtp"
 	"os"
 	"time"
 
@@ -31,7 +32,12 @@ type Config struct {
 	DBPort       string
 	DBName       string
 	CronSchedule string
+	AlertEmail   string
 }
+
+// Global state for alerts to prevent spamming
+var lastAlertSent time.Time
+var isDown bool
 
 // getEnv retrieves an environment variable or returns a default value
 func getEnv(key, defaultValue string) string {
@@ -51,13 +57,14 @@ func loadConfig() Config {
 		DBPort:       getEnv("DB_PORT", "3306"),
 		DBName:       getEnv("DB_NAME", "tene_life"),
 		CronSchedule: getEnv("CRON_SCHEDULE", "*/5 * * * *"),
+		AlertEmail:   getEnv("ALERT_EMAIL", "skybedy@gmail.com"),
 	}
 }
 
 var config Config
 
 func main() {
-	log.Println("Weather data processor started")
+	log.Println("Weather data processor started with alert system")
 
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using environment variables from system")
@@ -74,8 +81,8 @@ func main() {
 		log.Fatal("DB_PASSWORD environment variable is required")
 	}
 
-	log.Printf("Loaded configuration - DB: %s@%s:%s/%s, Schedule: %s",
-		config.DBUser, config.DBHost, config.DBPort, config.DBName, config.CronSchedule)
+	log.Printf("Loaded configuration - DB: %s@%s:%s/%s, Schedule: %s, Alert: %s",
+		config.DBUser, config.DBHost, config.DBPort, config.DBName, config.CronSchedule, config.AlertEmail)
 
 	c := cron.New()
 
@@ -163,23 +170,52 @@ func openDB() *sql.DB {
 	return db
 }
 
-func processWeatherData() error {
+func sendEmail(subject, body string) error {
+	from := "weather-processor@mail.timechip.cz"
+	to := []string{config.AlertEmail}
+	msg := []byte(fmt.Sprintf("To: %s\r\n"+
+		"Subject: %s\r\n"+
+		"\r\n"+
+		"%s\r\n", config.AlertEmail, subject, body))
 
+	err := smtp.SendMail("localhost:25", nil, from, to, msg)
+	if err != nil {
+		return fmt.Errorf("failed to send email: %w", err)
+	}
+	log.Printf("Alert email sent to %s: %s", config.AlertEmail, subject)
+	return nil
+}
+
+func processWeatherData() error {
 	data, err := os.ReadFile(config.JSONFilePath)
 	if err != nil {
+		handleDownState("File Read Error", fmt.Sprintf("Could not read weather.json: %v", err))
 		return fmt.Errorf("failed to read JSON file: %w", err)
 	}
 
 	var weatherData WeatherData
 	if err := json.Unmarshal(data, &weatherData); err != nil {
+		handleDownState("JSON Parse Error", fmt.Sprintf("Could not parse weather.json: %v", err))
 		return fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	// Check data age
+	measuredAt := time.Unix(weatherData.Timestamp, 0)
+	age := time.Since(measuredAt)
+	if age > 15*time.Minute {
+		handleDownState("Weather Data Stale", fmt.Sprintf("Last data received at %s (age: %v)", measuredAt.Format(time.RFC1123), age))
+		return fmt.Errorf("weather data is too old: %s", age)
+	}
+
+	// If we were down and now data is fresh, notify recovery
+	if isDown {
+		isDown = false
+		sendEmail("Weather System RECOVERED", fmt.Sprintf("Fresh data received at %s. System is back online.", time.Now().Format(time.RFC1123)))
 	}
 
 	temperature := math.Round(weatherData.Temperature*10) / 10
 	pressure := math.Round(weatherData.Pressure*10) / 10
 	humidity := math.Round(weatherData.Humidity*10) / 10
-
-	measuredAt := time.Unix(weatherData.Timestamp, 0)
 
 	db := openDB()
 	defer db.Close()
@@ -205,6 +241,22 @@ func processWeatherData() error {
 	}
 
 	return nil
+}
+
+func handleDownState(reason, details string) {
+	if !isDown {
+		isDown = true
+		subject := fmt.Sprintf("ALERT: Weather System Down - %s", reason)
+		body := fmt.Sprintf("The weather data processor has detected a problem:\n\nReason: %s\nDetails: %s\nTime: %s", 
+			reason, details, time.Now().Format(time.RFC1123))
+		
+		if err := sendEmail(subject, body); err != nil {
+			log.Printf("Failed to send alert email: %v", err)
+		}
+		lastAlertSent = time.Now()
+	} else {
+		log.Printf("System still down (%s), alert already sent.", reason)
+	}
 }
 
 // ------------------------- HOURLY ------------------------------
