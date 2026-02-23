@@ -180,20 +180,21 @@ func sendEmail(subject, body string) error {
 		"%s\r\n", config.AlertEmail, subject, body))
 
 	// Connect to the remote SMTP server.
-	c, err := smtp.Dial("localhost:25")
+	c, err := smtp.Dial("127.0.0.1:25")
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 
-	// Use mail.timechip.cz for STARTTLS so it matches the certificate
-	// even though we are connected to localhost
-	config := &tls.Config{
-		ServerName: "mail.timechip.cz",
-		InsecureSkipVerify: true,
-	}
-	if err = c.StartTLS(config); err != nil {
-		log.Printf("Warning: STARTTLS failed (continuing anyway): %v", err)
+	// If the server supports STARTTLS, we should use it but skip verification
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		config := &tls.Config{
+			ServerName: "mail.timechip.cz",
+			InsecureSkipVerify: true,
+		}
+		if err = c.StartTLS(config); err != nil {
+			return fmt.Errorf("STARTTLS failed: %w", err)
+		}
 	}
 
 	if err := c.Mail(from); err != nil {
