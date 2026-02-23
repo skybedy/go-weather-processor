@@ -178,10 +178,34 @@ func sendEmail(subject, body string) error {
 		"\r\n"+
 		"%s\r\n", config.AlertEmail, subject, body))
 
-	err := smtp.SendMail("localhost:25", nil, from, to, msg)
+	c, err := smtp.Dial("localhost:25")
 	if err != nil {
-		return fmt.Errorf("failed to send email: %w", err)
+		return err
 	}
+	defer c.Close()
+
+	if err := c.Mail(from); err != nil {
+		return err
+	}
+	for _, addr := range to {
+		if err := c.Rcpt(addr); err != nil {
+			return err
+		}
+	}
+
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(msg)
+	if err != nil {
+		return err
+	}
+	err = w.Close()
+	if err != nil {
+		return err
+	}
+
 	log.Printf("Alert email sent to %s: %s", config.AlertEmail, subject)
 	return nil
 }
