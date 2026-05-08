@@ -36,3 +36,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local systemd unit file
+weather-processor.service
