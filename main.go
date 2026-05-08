@@ -82,6 +82,17 @@ func main() {
 		log.Fatal("DB_PASSWORD environment variable is required")
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "backfill-missing-sea" {
+		db := openDB()
+		defer db.Close()
+
+		if err := backfillMissingSeaTemperatureAverages(db); err != nil {
+			log.Fatalf("Backfill failed: %v", err)
+		}
+		log.Println("Backfill of missing sea temperature averages finished successfully")
+		return
+	}
+
 	log.Printf("Loaded configuration - DB: %s@%s:%s/%s, Schedule: %s, Alert: %s",
 		config.DBUser, config.DBHost, config.DBPort, config.DBName, config.CronSchedule, config.AlertEmail)
 
@@ -445,6 +456,7 @@ func updateWeeklyStatistics(db *sql.DB) error {
 	var avgPressure, minPressure, maxPressure float64
 	var avgHumidity, minHumidity, maxHumidity float64
 	var samplesCount int
+	var avgSeaTemperature sql.NullFloat64
 
 	query := `
 		SELECT
@@ -479,19 +491,32 @@ func updateWeeklyStatistics(db *sql.DB) error {
 	avgHumidity = math.Round(avgHumidity*10) / 10
 	minHumidity = math.Round(minHumidity*10) / 10
 	maxHumidity = math.Round(maxHumidity*10) / 10
+	if err := db.QueryRow(`
+		SELECT ROUND(AVG(day_avg), 1)
+		FROM (
+			SELECT DATE(measured_at) AS measured_day, AVG(temperature) AS day_avg
+			FROM water_temperatures
+			WHERE DATE(measured_at) >= ? AND DATE(measured_at) <= ?
+			GROUP BY DATE(measured_at)
+		) d
+	`, weekStart, weekEnd).Scan(&avgSeaTemperature); err != nil {
+		return fmt.Errorf("failed to calculate weekly sea temperature average: %w", err)
+	}
 
 	upsert := `
 		INSERT INTO weather_weekly (
 			year, week, week_start, week_end,
+			avg_sea_temperature,
 			avg_temperature, min_temperature, max_temperature,
 			avg_pressure, min_pressure, max_pressure,
 			avg_humidity, min_humidity, max_humidity,
 			samples_count
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			week_start = VALUES(week_start),
 			week_end = VALUES(week_end),
+			avg_sea_temperature = VALUES(avg_sea_temperature),
 			avg_temperature = VALUES(avg_temperature),
 			min_temperature = VALUES(min_temperature),
 			max_temperature = VALUES(max_temperature),
@@ -505,7 +530,7 @@ func updateWeeklyStatistics(db *sql.DB) error {
 			updated_at = CURRENT_TIMESTAMP
 	`
 
-	_, err = db.Exec(upsert, year, week, weekStart, weekEnd,
+	_, err = db.Exec(upsert, year, week, weekStart, weekEnd, avgSeaTemperature,
 		avgTemp, minTemp, maxTemp,
 		avgPressure, minPressure, maxPressure,
 		avgHumidity, minHumidity, maxHumidity,
@@ -530,6 +555,7 @@ func updateMonthlyStatistics(db *sql.DB) error {
 	var avgPressure, minPressure, maxPressure float64
 	var avgHumidity, minHumidity, maxHumidity float64
 	var samplesCount int
+	var avgSeaTemperature sql.NullFloat64
 
 	query := `
 		SELECT
@@ -567,17 +593,30 @@ func updateMonthlyStatistics(db *sql.DB) error {
 	avgHumidity = math.Round(avgHumidity*10) / 10
 	minHumidity = math.Round(minHumidity*10) / 10
 	maxHumidity = math.Round(maxHumidity*10) / 10
+	if err := db.QueryRow(`
+		SELECT ROUND(AVG(day_avg), 1)
+		FROM (
+			SELECT DATE(measured_at) AS measured_day, AVG(temperature) AS day_avg
+			FROM water_temperatures
+			WHERE DATE(measured_at) >= ? AND DATE(measured_at) <= ?
+			GROUP BY DATE(measured_at)
+		) d
+	`, firstDay.Format("2006-01-02"), lastDay.Format("2006-01-02")).Scan(&avgSeaTemperature); err != nil {
+		return fmt.Errorf("failed to calculate monthly sea temperature average: %w", err)
+	}
 
 	upsert := `
 		INSERT INTO weather_monthly (
 			year, month,
+			avg_sea_temperature,
 			avg_temperature, min_temperature, max_temperature,
 			avg_pressure, min_pressure, max_pressure,
 			avg_humidity, min_humidity, max_humidity,
 			samples_count
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
+			avg_sea_temperature = VALUES(avg_sea_temperature),
 			avg_temperature = VALUES(avg_temperature),
 			min_temperature = VALUES(min_temperature),
 			max_temperature = VALUES(max_temperature),
@@ -591,11 +630,70 @@ func updateMonthlyStatistics(db *sql.DB) error {
 			updated_at = CURRENT_TIMESTAMP
 	`
 
-	_, err = db.Exec(upsert, year, month,
+	_, err = db.Exec(upsert, year, month, avgSeaTemperature,
 		avgTemp, minTemp, maxTemp,
 		avgPressure, minPressure, maxPressure,
 		avgHumidity, minHumidity, maxHumidity,
 		samplesCount)
 
 	return err
+}
+
+func backfillMissingSeaTemperatureAverages(db *sql.DB) error {
+	weeklyBackfill := `
+		UPDATE weather_weekly ww
+		INNER JOIN (
+			SELECT
+				CAST(SUBSTRING(yw, 1, 4) AS UNSIGNED) AS year,
+				CAST(SUBSTRING(yw, 5, 2) AS UNSIGNED) AS week,
+				ROUND(AVG(day_avg), 1) AS avg_sea_temperature
+			FROM (
+				SELECT
+					DATE(measured_at) AS measured_day,
+					AVG(temperature) AS day_avg,
+					LPAD(YEARWEEK(DATE(measured_at), 3), 6, '0') AS yw
+				FROM water_temperatures
+				GROUP BY DATE(measured_at)
+			) daily
+			GROUP BY yw
+		) src
+			ON src.year = ww.year
+			AND src.week = ww.week
+		SET
+			ww.avg_sea_temperature = src.avg_sea_temperature,
+			ww.updated_at = CURRENT_TIMESTAMP
+		WHERE ww.avg_sea_temperature IS NULL
+	`
+	if _, err := db.Exec(weeklyBackfill); err != nil {
+		return fmt.Errorf("failed weekly sea backfill: %w", err)
+	}
+
+	monthlyBackfill := `
+		UPDATE weather_monthly wm
+		INNER JOIN (
+			SELECT
+				YEAR(measured_day) AS year,
+				MONTH(measured_day) AS month,
+				ROUND(AVG(day_avg), 1) AS avg_sea_temperature
+			FROM (
+				SELECT
+					DATE(measured_at) AS measured_day,
+					AVG(temperature) AS day_avg
+				FROM water_temperatures
+				GROUP BY DATE(measured_at)
+			) daily
+			GROUP BY YEAR(measured_day), MONTH(measured_day)
+		) src
+			ON src.year = wm.year
+			AND src.month = wm.month
+		SET
+			wm.avg_sea_temperature = src.avg_sea_temperature,
+			wm.updated_at = CURRENT_TIMESTAMP
+		WHERE wm.avg_sea_temperature IS NULL
+	`
+	if _, err := db.Exec(monthlyBackfill); err != nil {
+		return fmt.Errorf("failed monthly sea backfill: %w", err)
+	}
+
+	return nil
 }
