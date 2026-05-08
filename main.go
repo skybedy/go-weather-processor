@@ -260,7 +260,7 @@ func processWeatherData() error {
 	}
 
 	// Check data age
-	measuredAt := time.Unix(weatherData.Timestamp, 0)
+	measuredAt := time.Unix(weatherData.Timestamp, 0).UTC()
 	age := time.Since(measuredAt)
 	if age > 15*time.Minute {
 		handleDownState("Weather Data Stale", fmt.Sprintf("Last data received at %s (age: %v)", measuredAt.Format(time.RFC1123), age))
