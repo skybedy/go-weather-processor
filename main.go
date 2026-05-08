@@ -64,6 +64,14 @@ func loadConfig() Config {
 
 var config Config
 
+func statsLocation() *time.Location {
+	loc, err := time.LoadLocation("Atlantic/Canary")
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
 func main() {
 	log.Println("Weather data processor started with alert system")
 
@@ -189,6 +197,15 @@ func runCommand(command string) error {
 		}
 		log.Println("Backfill of missing sea temperature averages finished successfully")
 		return nil
+	case "backfill-missing-hourly":
+		db := openDB()
+		defer db.Close()
+
+		if err := backfillTodayHourlyAverages(db); err != nil {
+			return fmt.Errorf("hourly backfill failed: %w", err)
+		}
+		log.Println("Backfill of today's hourly averages finished successfully")
+		return nil
 	default:
 		return fmt.Errorf("unknown command: %s", command)
 	}
@@ -212,7 +229,7 @@ func sendEmail(subject, body string) error {
 	// If the server supports STARTTLS, we should use it but skip verification
 	if ok, _ := c.Extension("STARTTLS"); ok {
 		config := &tls.Config{
-			ServerName: "mail.timechip.cz",
+			ServerName:         "mail.timechip.cz",
 			InsecureSkipVerify: true,
 		}
 		if err = c.StartTLS(config); err != nil {
@@ -307,9 +324,9 @@ func handleDownState(reason, details string) {
 	if !isDown {
 		isDown = true
 		subject := fmt.Sprintf("ALERT: Weather System Down - %s", reason)
-		body := fmt.Sprintf("The weather data processor has detected a problem:\n\nReason: %s\nDetails: %s\nTime: %s", 
+		body := fmt.Sprintf("The weather data processor has detected a problem:\n\nReason: %s\nDetails: %s\nTime: %s",
 			reason, details, time.Now().Format(time.RFC1123))
-		
+
 		if err := sendEmail(subject, body); err != nil {
 			log.Printf("Failed to send alert email: %v", err)
 		}
@@ -321,8 +338,19 @@ func handleDownState(reason, details string) {
 
 // ------------------------- HOURLY ------------------------------
 func updateHourlyAverages(db *sql.DB, currentTime time.Time) error {
-	date := currentTime.Format("2006-01-02")
-	hour := currentTime.Hour()
+	loc := statsLocation()
+	localTime := currentTime.In(loc)
+	localHourStart := time.Date(localTime.Year(), localTime.Month(), localTime.Day(), localTime.Hour(), 0, 0, 0, loc)
+	return updateHourlyAveragesForLocalHour(db, localHourStart)
+}
+
+func updateHourlyAveragesForLocalHour(db *sql.DB, localHourStart time.Time) error {
+	loc := statsLocation()
+	localHourStart = localHourStart.In(loc)
+	date := localHourStart.Format("2006-01-02")
+	hour := localHourStart.Hour()
+	windowStartUTC := localHourStart.UTC()
+	windowEndUTC := localHourStart.Add(time.Hour).UTC()
 
 	var avgTemp, avgPressure, avgHumidity float64
 	var samplesCount int
@@ -331,14 +359,14 @@ func updateHourlyAverages(db *sql.DB, currentTime time.Time) error {
 		SELECT
 			AVG(temperature) AS avg_temp,
 			AVG(pressure) AS avg_pressure,
-			AVG(humidity) AS avg_humidity,
-			COUNT(*) AS samples
-		FROM weather
-		WHERE DATE(measured_at) = ? AND HOUR(measured_at) = ?
-		HAVING samples > 0
+				AVG(humidity) AS avg_humidity,
+				COUNT(*) AS samples
+			FROM weather
+			WHERE measured_at >= ? AND measured_at < ?
+			HAVING samples > 0
 	`
 
-	err := db.QueryRow(query, date, hour).Scan(&avgTemp, &avgPressure, &avgHumidity, &samplesCount)
+	err := db.QueryRow(query, windowStartUTC, windowEndUTC).Scan(&avgTemp, &avgPressure, &avgHumidity, &samplesCount)
 	if err == sql.ErrNoRows {
 		log.Printf("No samples found for %s hour %d, skipping", date, hour)
 		return nil
@@ -367,6 +395,20 @@ func updateHourlyAverages(db *sql.DB, currentTime time.Time) error {
 		return fmt.Errorf("failed to upsert hourly averages: %w", err)
 	}
 
+	return nil
+}
+
+func backfillTodayHourlyAverages(db *sql.DB) error {
+	loc := statsLocation()
+	now := time.Now().In(loc)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	end := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, loc)
+
+	for slot := start; !slot.After(end); slot = slot.Add(time.Hour) {
+		if err := updateHourlyAveragesForLocalHour(db, slot); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
