@@ -82,14 +82,10 @@ func main() {
 		log.Fatal("DB_PASSWORD environment variable is required")
 	}
 
-	if len(os.Args) > 1 && os.Args[1] == "backfill-missing-sea" {
-		db := openDB()
-		defer db.Close()
-
-		if err := backfillMissingSeaTemperatureAverages(db); err != nil {
-			log.Fatalf("Backfill failed: %v", err)
+	if len(os.Args) > 1 {
+		if err := runCommand(os.Args[1]); err != nil {
+			log.Fatalf("Command %q failed: %v", os.Args[1], err)
 		}
-		log.Println("Backfill of missing sea temperature averages finished successfully")
 		return
 	}
 
@@ -180,6 +176,22 @@ func openDB() *sql.DB {
 		log.Fatalf("DB connect error: %v", err)
 	}
 	return db
+}
+
+func runCommand(command string) error {
+	switch command {
+	case "backfill-missing-sea":
+		db := openDB()
+		defer db.Close()
+
+		if err := backfillMissingSeaTemperatureAverages(db); err != nil {
+			return fmt.Errorf("backfill failed: %w", err)
+		}
+		log.Println("Backfill of missing sea temperature averages finished successfully")
+		return nil
+	default:
+		return fmt.Errorf("unknown command: %s", command)
+	}
 }
 
 func sendEmail(subject, body string) error {
